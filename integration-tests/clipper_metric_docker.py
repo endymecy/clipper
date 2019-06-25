@@ -34,13 +34,14 @@ def get_metrics_config():
     config_path = os.path.join(
         os.path.abspath("%s/../monitoring" % cur_dir), 'metrics_config.yaml')
     with open(config_path, 'r') as f:
-        conf = yaml.load(f)
+        conf = yaml.load(f, Loader=yaml.FullLoader)
     return conf
 
 
-def get_matched_query(metric_name):
-    query = gen_match_query(metric_name)
+def get_matched_query(metric_addr, metric_name):
+    query = gen_match_query(metric_addr, metric_name)
     logger.info("Querying: {}".format(query))
+    logger.info('test why docker query is broken: {}'.format(repr(query)))
     res = requests.get(query).json()
     logger.info(res)
     return res
@@ -74,8 +75,8 @@ def log_docker_ps(clipper_conn):
 
 
 if __name__ == '__main__':
-    metric_addr = "http://localhost:9090"
-    gen_match_query = lambda name: "http://localhost:9090/api/v1/series?match[]={}".format(name)
+    # metric_addr = "http://localhost:9090"
+    gen_match_query = lambda addr, name: "http://{addr}/api/v1/series?match[]={name}".format(addr=addr, name=name)
 
     logging.basicConfig(
         format=
@@ -92,17 +93,17 @@ if __name__ == '__main__':
         cleanup=False, start_clipper=True, new_name=cluster_name)
     python_deployer.create_endpoint(
         clipper_conn, "simple-example", "doubles", feature_sum, num_replicas=2)
-    time.sleep(2)
+    time.sleep(10)
     try:
         logger.info(
-            "Making 100 predictions using two model container; Should takes 25 seconds."
+            "Making 100 predictions using two model container; Should takes 50 seconds."
         )
         for _ in range(100):
             predict(clipper_conn.get_query_addr(), np.random.random(200))
-            time.sleep(0.2)
+            time.sleep(0.5)
 
         logger.info("Test 1: Checking status of 3 node exporter")
-        check_target_health(metric_addr)
+        check_target_health("http://{}".format(clipper_conn.cm.get_metric_addr()))
         logger.info("Test 1 Passed")
 
         logger.info("Test 2: Checking Model Container Metrics")
@@ -114,7 +115,7 @@ if __name__ == '__main__':
             if spec['type'] == 'Histogram' or spec['type'] == 'Summary':
                 name += '_sum'
 
-            res = get_matched_query(name)
+            res = get_matched_query(clipper_conn.cm.get_metric_addr(), name)
             parse_res_and_assert_node(res, node_num=2)
         logger.info("Test 2 Passed")
 

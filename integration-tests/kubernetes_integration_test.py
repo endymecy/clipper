@@ -5,6 +5,7 @@ import requests
 import tempfile
 import shutil
 import json
+import unittest
 import numpy as np
 import time
 import logging
@@ -13,6 +14,7 @@ from test_utils import (create_kubernetes_connection, BenchmarkException,
                         CLIPPER_CONTAINER_REGISTRY)
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath("%s/../clipper_admin" % cur_dir))
+import clipper_admin as cl
 from clipper_admin import __version__ as clipper_version, CLIPPER_TEMP_DIR, ClipperException, __registry__ as clipper_registry
 
 logging.basicConfig(
@@ -133,9 +135,74 @@ def test_kubernetes(clipper_conn, num_apps, num_models):
         sys.exit(1)
 
 
+class KubernetesContainerManagerTest(unittest.TestCase):
+    def test_service_types_of_kubernetes_container_manager(self):
+        cluster_name = "k8s-cluster-{}".format(random.randint(0, 5000))
+
+        logger.info("Test that service_types is 'dict' type or not")
+        service_types = [
+            'redis',
+            'management',
+            'query',
+            'query-rpc',
+            'metric'
+        ]
+        with self.assertRaises(cl.ClipperException) as c:
+            create_kubernetes_connection(cleanup=True,
+                                         new_name=cluster_name,
+                                         service_types=service_types)
+        self.assertTrue("service_types must be 'dict' type" in str(c.exception))
+
+        logger.info("Test that service_types has unknown keys or not")
+        service_types = {
+            'redis': 'NodePort',
+            'UNKNOWN_KEY': 'NodePort',  # for test
+            'query': 'NodePort',
+            'query-rpc': 'NodePort',
+            'metric': 'NodePort'
+        }
+        with self.assertRaises(cl.ClipperException) as c:
+            create_kubernetes_connection(cleanup=True,
+                                         new_name=cluster_name,
+                                         service_types=service_types)
+        self.assertTrue("service_types has unknown keys" in str(c.exception))
+
+        logger.info("Test that service_types has unknown values or not")
+        service_types = {
+            'redis': 'NodePort',
+            'management': 'NodePort',
+            'query': 'NodePort',
+            'query-rpc': 'UNKNOWN_VALUE',  # for test
+            'metric': 'NodePort'
+        }
+        with self.assertRaises(cl.ClipperException) as c:
+            create_kubernetes_connection(cleanup=True,
+                                         new_name=cluster_name,
+                                         service_types=service_types)
+        self.assertTrue("service_types has unknown values" in str(c.exception))
+
+        logger.info("Test that service_types has 'ExternalName' value or not")
+        service_types = {
+            'redis': 'NodePort',
+            'management': 'NodePort',
+            'query': 'NodePort',
+            'query-rpc': 'ExternalName',  # for test
+            'metric': 'NodePort'
+        }
+        with self.assertRaises(cl.ClipperException) as c:
+            create_kubernetes_connection(cleanup=True,
+                                         new_name=cluster_name,
+                                         service_types=service_types)
+        self.assertTrue("Clipper does not support" in str(c.exception))
+
+
+TEST_ORDERING = [
+    'test_service_types_of_kubernetes_container_manager',
+]
+
 if __name__ == "__main__":
-    num_apps = 3
-    num_models = 3
+    num_apps = 2
+    num_models = 2
     try:
         if len(sys.argv) > 1:
             num_apps = int(sys.argv[1])
@@ -159,6 +226,13 @@ if __name__ == "__main__":
         test_kubernetes(clipper_conn, num_apps, num_models)
         clipper_conn.stop_all()
 
+        try:
+            import subprocess32 as subprocess
+        except:
+            import subprocess
+        import shlex
+        proc = subprocess.Popen(shlex.split('kubectl proxy -p 8080'))
+
         # Test with proxy. Assumes proxy is running at 127.0.0.1:8080
         proxy_name = "k8s-proxy-test-cluster-{}".format(
             random.randint(0, 5000))
@@ -171,6 +245,16 @@ if __name__ == "__main__":
         test_kubernetes(clipper_conn, 1, 1)
         clipper_conn.stop_all()
 
+        proc.terminate()
+
     except Exception as e:
         logger.exception("Exception: {}".format(e))
         sys.exit(1)
+
+    suite = unittest.TestSuite()
+
+    for test in TEST_ORDERING:
+        suite.addTest(KubernetesContainerManagerTest(test))
+
+    result = unittest.TextTestRunner(verbosity=2, failfast=True).run(suite)
+    sys.exit(not result.wasSuccessful())

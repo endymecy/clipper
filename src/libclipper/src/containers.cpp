@@ -273,11 +273,19 @@ void ActiveContainers::add_container(VersionedModelId model, int connection_id,
 
 void ActiveContainers::remove_container(VersionedModelId model,
                                         int replica_id) {
-  log_info_formatted(
-      LOGGING_TAG_CONTAINERS,
-      "Removing container - model: {}, version: {}, replica ID: {}",
-      model.get_name(), model.get_id(), replica_id);
   boost::unique_lock<boost::shared_mutex> l{m_};
+
+  auto replicas_map_entry = containers_.find(model);
+  if (replicas_map_entry == containers_.end()) {
+    log_error_formatted(LOGGING_TAG_CONTAINERS,
+                        "Requested removing container {} for model {} NOT FOUND",
+                        replica_id, model.serialize());
+    return;
+  }
+
+  log_info_formatted(LOGGING_TAG_CONTAINERS,
+                     "Removing container {} for model {}",
+                     replica_id, model.serialize());
 
   size_t initial_size = containers_[model].size();
 
@@ -293,10 +301,9 @@ void ActiveContainers::remove_container(VersionedModelId model,
   assert(containers_[model].size() == initial_size - 1);
 
   if (containers_[model].size() == 0) {
-    log_info_formatted(
-        LOGGING_TAG_CONTAINERS,
-        "All containers of model: {}, version: {} are removed. Remove itself",
-        model.get_name(), model.get_id());
+    log_info_formatted(LOGGING_TAG_CONTAINERS,
+                       "All containers of model {} are removed. Remove itself",
+                       model.serialize());
     containers_.erase(model);
   }
 
@@ -318,6 +325,13 @@ void ActiveContainers::register_batch_size(VersionedModelId model,
   }
 }
 
+void ActiveContainers::unregister_batch_size(VersionedModelId model) {
+  auto batch_size_entry = batch_sizes_.find(model);
+  if (batch_size_entry != batch_sizes_.end()) {
+    batch_sizes_.erase(model);
+  }
+}
+
 std::shared_ptr<ModelContainer> ActiveContainers::get_model_replica(
     const VersionedModelId &model, const int replica_id) {
   boost::shared_lock<boost::shared_mutex> l{m_};
@@ -325,7 +339,7 @@ std::shared_ptr<ModelContainer> ActiveContainers::get_model_replica(
   auto replicas_map_entry = containers_.find(model);
   if (replicas_map_entry == containers_.end()) {
     log_error_formatted(LOGGING_TAG_CONTAINERS,
-                        "Requested replica {} for model {} NOT FOUND",
+                        "Requested container {} for model {} NOT FOUND",
                         replica_id, model.serialize());
     return nullptr;
   }

@@ -245,7 +245,8 @@ bool add_model(Redox& redis, const VersionedModelId& model_id,
       "labels",           labels_to_str(labels),
       "container_name",   container_name,
       "model_data_path",  model_data_path,
-      "batch_size", std::to_string(batch_size)};
+      "batch_size",       std::to_string(batch_size),
+      "valid",            ""};
     // clang-format on
     return send_cmd_no_reply<string>(redis, cmd_vec);
   } else {
@@ -269,7 +270,18 @@ std::unordered_map<std::string, std::string> get_model_by_key(
   }
 }
 
-bool delete_model(Redox& redis, const VersionedModelId& model_id) {
+bool mark_versioned_model_for_delete(Redox& redis,
+                                     const VersionedModelId& model_id) {
+  if (send_cmd_no_reply<string>(
+          redis, {"SELECT", std::to_string(REDIS_MODEL_DB_NUM)})) {
+    std::string model_id_key = gen_versioned_model_key(model_id);
+    return send_cmd_no_reply<int>(redis, {"HDEL", model_id_key, "valid"});
+  } else {
+    return false;
+  }
+}
+
+bool delete_versioned_model(Redox& redis, const VersionedModelId& model_id) {
   if (send_cmd_no_reply<string>(
           redis, {"SELECT", std::to_string(REDIS_MODEL_DB_NUM)})) {
     std::string model_id_key = gen_versioned_model_key(model_id);
@@ -480,6 +492,22 @@ bool add_model_links(redox::Redox& redis, const std::string& appname,
     for (auto model_name : model_names) {
       if (!send_cmd_no_reply<int>(
               redis, std::vector<std::string>{"SADD", appname, model_name})) {
+        return false;
+      }
+    }
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool delete_model_links(redox::Redox& redis, const std::string& appname,
+                        const std::vector<std::string>& model_names) {
+  if (send_cmd_no_reply<string>(
+          redis, {"SELECT", std::to_string(REDIS_APP_MODEL_LINKS_DB_NUM)})) {
+    for (auto model_name : model_names) {
+      if (!send_cmd_no_reply<int>(
+              redis, vector<string>{"SREM", appname, model_name})) {
         return false;
       }
     }

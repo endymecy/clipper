@@ -53,6 +53,7 @@ const std::string ADD_APPLICATION = ADMIN_PATH + "/add_app$";
 const std::string DELETE_APPLICATION = ADMIN_PATH + "/delete_app$";
 const std::string ADD_MODEL_LINKS = ADMIN_PATH + "/add_model_links$";
 const std::string ADD_MODEL = ADMIN_PATH + "/add_model$";
+const std::string DELETE_VERSIONED_MODEL = ADMIN_PATH + "/delete_versioned_model";
 const std::string SET_MODEL_VERSION = ADMIN_PATH + "/set_model_version$";
 
 // const std::string ADD_CONTAINER = ADMIN_PATH + "/add_container$";
@@ -65,6 +66,9 @@ const std::string GET_ALL_MODELS = ADMIN_PATH + "/get_all_models$";
 const std::string GET_MODEL = ADMIN_PATH + "/get_model$";
 const std::string GET_ALL_CONTAINERS = ADMIN_PATH + "/get_all_containers$";
 const std::string GET_CONTAINER = ADMIN_PATH + "/get_container$";
+const std::string DELETE_MODEL_LINKS = ADMIN_PATH + "/delete_model_links$";
+
+const std::string PING = ADMIN_PATH + "/ping$";
 
 const std::string ADD_APPLICATION_JSON_SCHEMA = R"(
   {
@@ -79,6 +83,13 @@ const std::string ADD_MODEL_LINKS_JSON_SCHEMA = R"(
   {
     "app_name" := string,
     "model_names" := [string]
+  }
+)";
+
+const std::string DELETE_MODEL_LINKS_JSON_SCHEMA = R"(
+  {
+  "app_name" := string,
+  "model_names" := [string]
   }
 )";
 
@@ -126,6 +137,13 @@ const std::string ADD_MODEL_JSON_SCHEMA = R"(
   }
 )";
 
+const std::string DELETE_VERSIONED_MODEL_JSON_SCHEMA = R"(
+  {
+   "model_name" := string,
+   "model_version" := string,
+  }
+)";
+
 const std::string SET_VERSION_JSON_SCHEMA = R"(
   {
    "model_name" := string,
@@ -142,9 +160,9 @@ const std::string SELECTION_JSON_SCHEMA = R"(
 
 void respond_http(std::string content, std::string message,
                   std::shared_ptr<HttpServer::Response> response) {
-  *response << "HTTP/1.1 " << message
+  *response << "HTTP/1.1 " << message << "\r\nContent-Type: application/json"
             << "\r\nContent-Length: " << content.length() << "\r\n\r\n"
-            << content << "\n";
+            << content;
 }
 
 /* Generate a user-facing error message containing the exception
@@ -159,7 +177,8 @@ std::string json_error_msg(const std::string& exception_msg,
 
 class RequestHandler {
  public:
-  RequestHandler(int portno) : server_(portno), state_db_{} {
+  RequestHandler(std::string address, int portno)
+      : server_(address, portno), state_db_{} {
     clipper::Config& conf = clipper::get_config();
     while (!redis_connection_.connect(conf.get_redis_address(),
                                       conf.get_redis_port())) {
@@ -236,6 +255,27 @@ class RequestHandler {
                 json_error_msg(e.what(), ADD_MODEL_LINKS_JSON_SCHEMA);
             respond_http(err_msg, "400 Bad Request", response);
           } catch (const clipper::ManagementOperationError& e) {
+            respond_http(e.what(), "400 Bad Request", response);
+          }
+        });
+    server_.add_endpoint(
+        DELETE_MODEL_LINKS, "POST",
+        [this](std::shared_ptr<HttpServer::Response> response,
+               std::shared_ptr<HttpServer::Request> request) {
+          try {
+            clipper::log_info(LOGGING_TAG_MANAGEMENT_FRONTEND,
+                              "Remove application links POST request");
+            std::string result = delete_model_links(request->content.string());
+            respond_http(result, "200 OK", response);
+          } catch (const json_parse_error& e) {
+            std::string err_msg =
+                json_error_msg(e.what(), DELETE_MODEL_LINKS_JSON_SCHEMA);
+            respond_http(err_msg, "400 Bad Request", response);
+          } catch (const json_semantic_error& e) {
+            std::string err_msg =
+                json_error_msg(e.what(), DELETE_MODEL_LINKS_JSON_SCHEMA);
+            respond_http(err_msg, "400 Bad Request", response);
+          } catch (const std::invalid_argument& e) {
             respond_http(e.what(), "400 Bad Request", response);
           }
         });
@@ -434,6 +474,8 @@ class RequestHandler {
         [this](std::shared_ptr<HttpServer::Response> response,
                std::shared_ptr<HttpServer::Request> request) {
           try {
+            clipper::log_info(LOGGING_TAG_MANAGEMENT_FRONTEND,
+                              "Get selection state POST request");
             std::string result = get_selection_state(request->content.string());
             respond_http(result, "200 OK", response);
           } catch (const json_parse_error& e) {
@@ -443,6 +485,36 @@ class RequestHandler {
           } catch (const json_semantic_error& e) {
             std::string err_msg =
                 json_error_msg(e.what(), SELECTION_JSON_SCHEMA);
+            respond_http(err_msg, "400 Bad Request", response);
+          } catch (const clipper::ManagementOperationError& e) {
+            respond_http(e.what(), "400 Bad Request", response);
+          }
+        });
+
+    // Healthcheck API
+    server_.add_endpoint(
+        PING, "GET", 
+        [this](std::shared_ptr<HttpServer::Response> response,
+               std::shared_ptr<HttpServer::Request> request) {
+            respond_http("PONG", "200 OK", response);
+        });
+
+    server_.add_endpoint(
+        DELETE_VERSIONED_MODEL, "POST",
+        [this](std::shared_ptr<HttpServer::Response> response,
+               std::shared_ptr<HttpServer::Request> request) {
+          try {
+            clipper::log_info(LOGGING_TAG_MANAGEMENT_FRONTEND,
+                              "Delete versioned model POST request");
+            std::string result = delete_versioned_model(request->content.string());
+            respond_http(result, "200 OK", response);
+          } catch (const json_parse_error& e) {
+            std::string err_msg =
+                json_error_msg(e.what(), DELETE_VERSIONED_MODEL_JSON_SCHEMA);
+            respond_http(err_msg, "400 Bad Request", response);
+          } catch (const json_semantic_error& e) {
+            std::string err_msg =
+                json_error_msg(e.what(), DELETE_VERSIONED_MODEL_JSON_SCHEMA);
             respond_http(err_msg, "400 Bad Request", response);
           } catch (const clipper::ManagementOperationError& e) {
             respond_http(e.what(), "400 Bad Request", response);
@@ -609,6 +681,58 @@ class RequestHandler {
       throw clipper::ManagementOperationError(ss.str());
     }
   }
+
+  /**
+   * Creates an endpoint that listens for requests to remove links between
+   * apps and models
+   *
+   * JSON format:
+   * {
+   *  "app_name" := string,
+   *  "model_names" := [string]
+   * }
+   */
+  std::string delete_model_links(const std::string& json) {
+    rapidjson::Document d;
+    parse_json(json, d);
+
+    std::string app_name = get_string(d, "app_name");
+    std::vector<string> model_names = get_string_array(d, "model_names");
+
+    // Confirm that the app exists
+    auto app_info =
+        clipper::redis::get_application(redis_connection_, app_name);
+    if (app_info.size() == 0) {
+      std::stringstream ss;
+      ss << "No app with name " << app_name << " exists.";
+      throw std::invalid_argument(ss.str());
+    }
+
+    // Confirm that the model names supplied are of linked models
+    auto existing_linked_models =
+        clipper::redis::get_linked_models(redis_connection_, app_name);
+
+    for (auto const& model_name : model_names) {
+      if (std::find(existing_linked_models.begin(),
+                    existing_linked_models.end(),
+                    model_name) == existing_linked_models.end()) {
+        std::stringstream ss;
+        ss << "Cannot remove nonexistent link between app " << app_name
+           << " and model " << model_name;
+        throw std::invalid_argument(ss.str());
+      }
+    }
+
+    if (clipper::redis::delete_model_links(redis_connection_, app_name,
+                                           model_names)) {
+      return "Success!";
+    } else {
+      std::stringstream ss;
+      ss << "Error deleting linked models from " << app_name << " in Redis";
+      throw std::invalid_argument(ss.str());
+    }
+  }
+
 
   /**
    * Processes a request to add a new application to Clipper
@@ -1051,7 +1175,7 @@ class RequestHandler {
     response_doc.SetObject();
 
     if (model_metadata.size() > 0) {
-      /* We assume that redis::get_model returns an empty map iff no model
+      /* We assume that redis::get_model returns an empty map if no model
        * exists */
       redis_model_metadata_to_json(response_doc, model_metadata);
       bool is_current_version =
@@ -1183,6 +1307,65 @@ class RequestHandler {
     auto app_metadata =
         clipper::redis::get_application(redis_connection_, app_name);
     return app_metadata["default_output"];
+  }
+
+  /**
+   * Processes a request to remove the versioned model from Clipper
+   *
+   * JSON format:
+   * {
+   *  "model_name" := string,
+   *  "model_version" := string
+   * }
+   *
+   * \return A string describing the operation's success
+   * \throws ManagementOperationError if the operation is not successful
+   */
+  std::string delete_versioned_model(const std::string& json) {
+    rapidjson::Document d;
+    parse_json(json, d);
+    std::string model_name = get_string(d, "model_name");
+    std::string model_version = get_string(d, "model_version");
+    VersionedModelId model_id = VersionedModelId(model_name, model_version);
+
+    // check if this version of the model has been existed or not
+    std::unordered_map<std::string, std::string> existing_model_data =
+        clipper::redis::get_model(redis_connection_, model_id);
+    if (existing_model_data.empty()) {
+      std::stringstream ss;
+      ss << "model with name "
+         << "'" << model_name << "'"
+         << " and version "
+         << "'" << model_version << "'"
+         << " does not exist";
+      throw clipper::ManagementOperationError(ss.str());
+    }
+    if (existing_model_data.find("valid") == existing_model_data.end()) {
+      std::stringstream ss;
+      ss << "model with name "
+         << "'" << model_name << "'"
+         << " and version "
+         << "'" << model_version << "'"
+         << " is already marked as 'invalid'";
+      throw clipper::ManagementOperationError(ss.str());
+    }
+
+    if (clipper::redis::mark_versioned_model_for_delete(redis_connection_, model_id)) {
+      std::stringstream ss;
+      ss << "Successfully deleted model with name "
+         << "'" << model_name << "'"
+         << " and version "
+         << "'" << model_version << "'";
+      return ss.str();
+    } else {
+      std::stringstream ss;
+      ss << "Error deleting model with name "
+         << "'" << model_name << "'"
+         << " and version "
+         << "'" << model_version << "'"
+         << " from Redis";
+      throw clipper::ManagementOperationError(ss.str());
+    }
   }
 
   /**

@@ -89,10 +89,10 @@ TEST_F(RedisTest, AddModel) {
   ASSERT_TRUE(add_model(*redis_, model, InputType::Ints, labels, container_name,
                         model_path, DEFAULT_BATCH_SIZE));
   auto result = get_model(*redis_, model);
-  // The model table has 8 fields, so we expect
-  // to get back a map with 8 entries in it
+  // The model table has 9 fields, so we expect
+  // to get back a map with 9 entries in it
   // (see add_model() in redis.cpp for details on what the fields are).
-  EXPECT_EQ(result.size(), static_cast<size_t>(8));
+  EXPECT_EQ(result.size(), static_cast<size_t>(9));
   ASSERT_EQ(result["model_name"], model.get_name());
   ASSERT_EQ(result["model_version"], model.get_id());
   ASSERT_FLOAT_EQ(std::stof(result["load"]), 0.0);
@@ -132,6 +132,37 @@ TEST_F(RedisTest, AddModelLinks) {
   std::sort(linked_models.begin(), linked_models.end());
   std::sort(model_names.begin(), model_names.end());
   ASSERT_EQ(model_names, linked_models);
+}
+
+TEST_F(RedisTest, DeleteModelLinks) {
+  std::string app_name = "my_app_name";
+  InputType input_type = InputType::Doubles;
+  std::string policy = DefaultOutputSelectionPolicy::get_name();
+  std::string default_output = "1.0";
+  int latency_slo_micros = 10000;
+  ASSERT_TRUE(add_application(*redis_, app_name, input_type, policy,
+                              default_output, latency_slo_micros));
+
+  std::vector<std::string> labels{"ads", "images", "experimental", "other",
+                                  "labels"};
+  std::string model_name_1 = "model_1";
+  std::string model_name_2 = "model_2";
+  VersionedModelId model_1 = VersionedModelId(model_name_1, "1");
+  VersionedModelId model_2 = VersionedModelId(model_name_2, "1");
+  std::string container_name = "clipper/test_container";
+  std::string model_path = "/tmp/models/m/1";
+  ASSERT_TRUE(add_model(*redis_, model_1, input_type, labels, container_name,
+                        model_path, DEFAULT_BATCH_SIZE));
+  ASSERT_TRUE(add_model(*redis_, model_2, input_type, labels, container_name,
+                        model_path, DEFAULT_BATCH_SIZE));
+
+  std::vector<std::string> model_names =
+      std::vector<std::string>{model_name_1, model_name_2};
+  ASSERT_TRUE(add_model_links(*redis_, app_name, model_names));
+  ASSERT_TRUE(delete_model_links(*redis_, app_name, model_names));
+
+  auto linked_models = get_linked_models(*redis_, app_name);
+  ASSERT_EQ(linked_models.size(), (size_t)0);
 }
 
 TEST_F(RedisTest, SetCurrentModelVersion) {
@@ -233,8 +264,8 @@ TEST_F(RedisTest, DeleteModel) {
   ASSERT_TRUE(add_model(*redis_, model, InputType::Ints, labels, container_name,
                         model_path, DEFAULT_BATCH_SIZE));
   auto add_result = get_model(*redis_, model);
-  EXPECT_EQ(add_result.size(), static_cast<size_t>(8));
-  ASSERT_TRUE(delete_model(*redis_, model));
+  EXPECT_EQ(add_result.size(), static_cast<size_t>(9));
+  ASSERT_TRUE(delete_versioned_model(*redis_, model));
   auto delete_result = get_model(*redis_, model);
   EXPECT_EQ(delete_result.size(), static_cast<size_t>(0));
 }
@@ -421,7 +452,7 @@ TEST_F(RedisTest, SubscriptionDetectModelDelete) {
       });
   // give Redis some time to register the subscription
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
-  ASSERT_TRUE(delete_model(*redis_, model));
+  ASSERT_TRUE(delete_versioned_model(*redis_, model));
   std::unique_lock<std::mutex> l(notification_mutex);
   bool result = notification_recv.wait_for(l, std::chrono::milliseconds(1000),
                                            [&recv]() { return recv == true; });

@@ -733,7 +733,7 @@ def add_metrics():
         os.path.split(os.path.realpath(__file__))[0], config_file_path)
 
     with open(config_file_path, 'r') as f:
-        config = yaml.load(f)
+        config = yaml.load(f, Loader=yaml.FullLoader)
     config = config['Model Container']
 
     prefix = 'clipper_{}_'.format(config.pop('prefix'))
@@ -761,4 +761,4 @@ def start_metric_server():
     Popen(cmd)
 
     # sleep is necessary because Popen returns immediately
-    time.sleep(1)
+    time.sleep(5)
